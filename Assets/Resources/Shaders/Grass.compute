@@ -1,0 +1,165 @@
+﻿#pragma kernel CSMain
+ 
+ #define threadX 4
+ #define threadY 4
+ #define threadZ 4
+
+ #define strideX 4
+ #define strideY 4
+ #define strideZ 4
+
+ #define gridX (threadX * strideX)
+ #define gridY (threadY * strideY)
+ #define gridZ (threadZ * strideZ)
+
+
+//low level
+float _Time;
+float _Delta;
+
+int _NumberHands;
+
+
+struct Vert{
+  float3 pos; 
+  float3 vel;
+  float3 nor;
+  float2 uv;
+  float2 texUV;
+  float  bladeID;
+  float  downID;
+  float  upID;
+  float3 debug;
+};
+
+struct Hand{
+  float  active;
+  float3 pos;
+  float3 vel;
+  float3 aVel;
+  float  triggerVal;
+  float  thumbVal;
+  float  sideVal;
+  float2 thumbPos;
+};
+
+
+
+
+RWStructuredBuffer<Vert> vertBuffer;
+RWStructuredBuffer<Hand> handBuffer;
+
+
+Texture2D<float4> _Audio;
+
+float3 springForce( float3 p1 , float3 p2 , float d ){
+
+  float3 dir = p1 - p2;
+  float l = length( dir );
+  dir = normalize( dir );
+
+  float dif = l - d;
+
+  return dif * dif * float(sign(dif)) * -dir;
+
+}
+
+#ifndef __noise_hlsl_
+#define __noise_hlsl_
+ 
+// hash based 3d value noise
+// function taken from [url]https://www.shadertoy.com/view/XslGRr[/url]
+// Created by inigo quilez - iq/2013
+// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
+ 
+// ported from GLSL to HLSL
+ 
+float hash( float n )
+{
+    return frac(sin(n)*43758.5453);
+}
+ 
+float noise( float3 x )
+{
+    // The noise function returns a value in the range -1.0f -> 1.0f
+ 
+    float3 p = floor(x);
+    float3 f = frac(x);
+ 
+    f       = f*f*(3.0-2.0*f);
+    float n = p.x + p.y*57.0 + 113.0*p.z;
+ 
+    return lerp(lerp(lerp( hash(n+0.0), hash(n+1.0),f.x),
+                   lerp( hash(n+57.0), hash(n+58.0),f.x),f.y),
+               lerp(lerp( hash(n+113.0), hash(n+114.0),f.x),
+                   lerp( hash(n+170.0), hash(n+171.0),f.x),f.y),f.z);
+}
+ 
+#endif
+
+
+[numthreads(threadX,threadY,threadZ)]
+void CSMain (uint3 id : SV_DispatchThreadID) {
+  
+  int pID = id.x + id.y * gridX + id.z * gridX * gridY;
+
+  Vert vert = vertBuffer[pID];
+
+
+
+  float3 force = float3( 0 , 0 , 0 );
+
+  bool frozen = false;
+
+  if( vert.downID == -1 ){ frozen = true;}
+  
+
+  if( frozen == false ){
+    force += float3(0,.02,0);
+    force += float3( noise( vert.pos * 2+ float3( _Time * .5 , 0 , _Time * .1)) * .01 - .005 , 0 , 0);
+    //force += vert.nor * .01;
+
+    if( vert.downID >= 0 ){
+      float3 dPos = vertBuffer[vert.downID].pos;
+      force += 10.*springForce( vert.pos , dPos , .001 );
+
+    }
+
+    if( vert.upID >= 0 ){
+      float3 dPos = vertBuffer[vert.upID].pos;
+      force += 10.1*springForce( vert.pos , dPos , .001 );
+    }
+
+
+  
+    //Hand Forces
+    for( int i = 0; i < _NumberHands; i++ ){
+      Hand  h = handBuffer[i];
+      if( length( h.pos - vert.pos ) < .2 ){
+        force += (length(h.pos - vert.pos)-.2) *normalize(h.pos - vert.pos) * 10.2;
+      }
+     //force += h.triggerVal  * _HandRepelStrength * handForce( vert.pos , h.pos , _HandRepelRadius );
+    }
+
+
+  
+    force *= .01;
+
+    if( length( force ) > 4. ){ force = normalize( force ) * 4.; }
+
+    vert.vel += force * 1;
+
+    // Limit Velocity
+    if( length( vert.vel ) > 2. ){ vert.vel = normalize( vert.vel )* 2.; }
+
+    //Dampening
+    vert.vel *= .9;
+    vert.pos += vert.vel ;
+
+  }
+
+  
+  //vert.pos = og.pos;
+  vertBuffer[pID] = vert;
+
+}
